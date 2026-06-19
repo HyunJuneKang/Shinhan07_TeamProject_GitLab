@@ -1,210 +1,217 @@
 package service;
 
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
-import java.util.Scanner;
 
 import model.Account;
-import model.AccountStatus;
-import repository.AccountRepositories;
+import model.Customer;
+import repository.AccountDao;
+import repository.CustomerDao;
+import util.DBUtil;
 
+/**
+ * 설명 : 비즈니스 로직과 트랜잭션을 담당하는 Service (단일 클래스).
+ * - DAO에 Connection을 넘겨주며, 개설/이체처럼 여러 SQL이 묶이는 작업은
+ *   setAutoCommit(false) → commit() / 예외 시 rollback() 으로 원자성을 보장한다.
+ * - 잘못된 입력은 표준 예외(IllegalArgumentException / IllegalStateException)로 알린다.
+ */
 public class AccountService {
-    
-    // DB와 통신하기 위해 팀원 A가 만든 Repository를 가져옴
-	 private final AccountRepositories accountRepository;
-	    private final Scanner scanner;
 
-	    // 의존성 주입 (팀원 A가 만든 Repository를 주입받음)
-	    public AccountService(AccountRepositories accountRepository) {
-	        this.accountRepository = accountRepository;
-	        this.scanner = new Scanner(System.in);
-	    }
+    private final AccountDao accountDao;
+    private final CustomerDao customerDao;
 
-	    // 1. 계좌 개설 요청 처리
-	    public void createAccount() {
-	        System.out.println("\n--- 계좌 개설 ---");
-	        System.out.print("고객 ID(숫자) 입력: ");
-	        Long customerId = scanner.nextLong();
-	        System.out.print("최초 입금액 입력: ");
-	        BigDecimal balance = scanner.nextBigDecimal();
+    public AccountService(AccountDao accountDao, CustomerDao customerDao) {
+        this.accountDao = accountDao;
+        this.customerDao = customerDao;
+    }
 
-	        // 롬복 빌더 패턴으로 객체 생성
-	        Account newAccount = Account.builder()
-	                .customerId(customerId)
-	                .balance(balance)
-	                .status(AccountStatus.ACTIVE)
-	                .build();
+    /** 계좌 개설 : 고객 등록 + 계좌 생성(초기 잔액)을 한 트랜잭션으로 처리. */
+    public Account openAccount(String customerName, String phone, BigDecimal initialBalance) {
+        if (customerName == null || customerName.isBlank()) {
+            throw new IllegalArgumentException("고객명을 입력해야 합니다.");
+        }
+        BigDecimal initial = (initialBalance == null) ? BigDecimal.ZERO : initialBalance;
+        if (initial.signum() < 0) {
+            throw new IllegalArgumentException("초기 잔액은 0 이상이어야 합니다.");
+        }
 
-	        boolean isSuccess = accountRepository.save(newAccount);
-	        if (isSuccess) {
-	            System.out.println("계좌 개설 요청 성공! (시퀀스에 의해 계좌번호가 자동 발급됩니다.)");
-	        } else {
-	            System.out.println("계좌 개설 실패.");
-	        }
-	    }
+        Connection con = connect();
+        try {
+            con.setAutoCommit(false);
 
-	    // 2. 계좌 단건 조회 요청 처리
-	    public void getAccount() {
-	        System.out.println("\n--- 계좌 정보 조회 ---");
-	        System.out.print("조회할 계좌번호 입력: ");
-	        String accountNo = scanner.next();
+            Customer customer = Customer.builder().name(customerName).phone(phone).build();
+            long customerId = customerDao.insert(con, customer);
 
-	        Account account = accountRepository.findByAccountNo(accountNo);
-	        if (account != null) {
-	            System.out.println("====== 조회 결과 ======");
-	            System.out.println(account.toString()); // 롬복 @ToString 활용
-	        } else {
-	            System.out.println("해당 계좌를 찾을 수 없습니다.");
-	        }
-	    }
+            Account account = Account.builder()
+                    .customerId(customerId)
+                    .balance(initial)
+                    .build();
+            accountDao.insert(con, account); // 계좌번호 자동 발급
 
-	    // 3. 특정 고객의 전체 계좌 조회
-	    public void getCustomerAccounts() {
-	        System.out.println("\n--- 고객별 보유 계좌 목록 조회 ---");
-	        System.out.print("고객 ID(숫자) 입력: ");
-	        int customerId = scanner.nextInt();
+            con.commit();
+            return account;
+        } catch (RuntimeException e) {
+            rollback(con);
+            throw e;
+        } catch (SQLException e) {
+            rollback(con);
+            throw new RuntimeException("계좌 개설 실패", e);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	        List<Account> accounts = accountRepository.findByCustomerId(customerId);
-	        if (accounts.isEmpty()) {
-	            System.out.println("해당 고객이 보유한 계좌가 없습니다.");
-	        } else {
-	            System.out.println("====== 보유 계좌 목록 ======");
-	            for (Account acc : accounts) {
-	                System.out.println(acc);
-	            }
-	        }
-	    }
-	    public void f_deposit() {
-	        System.out.println("\n--- 계좌 입금 ---");
-	        System.out.print("입금할 계좌번호 입력: "); // 💡 안내 문구 수정 (고객 ID -> 계좌번호)
-	        String accountNo = scanner.nextLine();
-	        
-	        // 1. 입력받은 계좌번호로 기존 계좌 정보 조회
-	        Account account = accountRepository.findByAccountNo(accountNo);
-	        
-	        if (account != null) {
-	            System.out.print("입금할 금액 입력: ");
-	            BigDecimal depositAmount = scanner.nextBigDecimal();
-	            scanner.nextLine(); // Scanner 버그 방지용 (엔터키 소모)
+    /** 전체 계좌 조회. */
+    public List<Account> findAllAccounts() {
+        Connection con = connect();
+        try {
+            return accountDao.findAll(con);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            if (depositAmount.compareTo(BigDecimal.ZERO) <= 0) {
-	                System.out.println("금액은 0원보다 커야 합니다.");
-	                return;
-	            }
+    /** 단건 조회. 없으면 예외. */
+    public Account findAccount(String accountNo) {
+        Connection con = connect();
+        try {
+            return getOrThrow(con, accountNo);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            // 2. 기존 잔액에 입금액을 더해서 새로운 잔액 설정
-	          
-	            account.setBalance(account.getBalance().add(depositAmount));
+    /** 입금 : 잔액 증가. */
+    public void deposit(String accountNo, BigDecimal amount) {
+        validateAmount(amount);
+        Connection con = connect();
+        try {
+            con.setAutoCommit(false);
+            Account account = getOrThrow(con, accountNo);
+            BigDecimal newBalance = account.getBalance().add(amount);
+            accountDao.updateBalance(con, accountNo, newBalance);
+            con.commit();
+        } catch (RuntimeException e) {
+            rollback(con);
+            throw e;
+        } catch (SQLException e) {
+            rollback(con);
+            throw new RuntimeException("입금 실패", e);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            // 3. 💡 핵심: 수정된 account 객체를 통째로 넘겨서 DB 업데이트
-	            boolean isSuccess = accountRepository.update(account);
-	            
-	            if (isSuccess) {
-	                System.out.println("====== 입금 완료 ======");
-	                System.out.println(account.toString()); // 롬복 @ToString 활용
-	            } else {
-	                System.out.println("입금 처리 중 오류가 발생했습니다.");
-	            }
-	        } else {
-	            System.out.println("해당 계좌를 찾을 수 없습니다.");
-	        }
-	    }
-	    public void f_withdraw() {
-	        System.out.println("\n--- 계좌 입금 ---");
-	        System.out.print("출금할 계좌번호 입력: "); // 💡 안내 문구 수정 (고객 ID -> 계좌번호)
-	        String accountNo = scanner.nextLine();
-	        
-	        // 1. 입력받은 계좌번호로 기존 계좌 정보 조회
-	        Account account = accountRepository.findByAccountNo(accountNo);
-	        
-	        if (account != null) {
-	            System.out.print("출금할 금액 입력: ");
-	            BigDecimal depositAmount = scanner.nextBigDecimal();
-	            scanner.nextLine(); // Scanner 버그 방지용 (엔터키 소모)
+    /** 출금 : 잔액 부족 시 예외. */
+    public void withdraw(String accountNo, BigDecimal amount) {
+        validateAmount(amount);
+        Connection con = connect();
+        try {
+            con.setAutoCommit(false);
+            Account account = getOrThrow(con, accountNo);
+            if (account.getBalance().compareTo(amount) < 0) {
+                throw new IllegalStateException("잔액이 부족합니다. (잔액: " + account.getBalance()
+                        + ", 요청: " + amount + ")");
+            }
+            BigDecimal newBalance = account.getBalance().subtract(amount);
+            accountDao.updateBalance(con, accountNo, newBalance);
+            con.commit();
+        } catch (RuntimeException e) {
+            rollback(con);
+            throw e;
+        } catch (SQLException e) {
+            rollback(con);
+            throw new RuntimeException("출금 실패", e);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            if (depositAmount.compareTo(account.getBalance()) > 0 ) {
-	                System.out.println("출금할 금액이 부족합니다.");
-	                return;
-	            }
+    /** 이체 : 출금 계좌 → 입금 계좌. 두 계좌 갱신을 한 트랜잭션으로. */
+    public void transfer(String fromNo, String toNo, BigDecimal amount) {
+        validateAmount(amount);
+        if (fromNo != null && fromNo.equals(toNo)) {
+            throw new IllegalArgumentException("같은 계좌로는 이체할 수 없습니다.");
+        }
+        Connection con = connect();
+        try {
+            con.setAutoCommit(false);
+            Account from = getOrThrow(con, fromNo);
+            Account to = getOrThrow(con, toNo);
+            if (from.getBalance().compareTo(amount) < 0) {
+                throw new IllegalStateException("잔액이 부족합니다. (잔액: " + from.getBalance()
+                        + ", 요청: " + amount + ")");
+            }
+            accountDao.updateBalance(con, fromNo, from.getBalance().subtract(amount));
+            accountDao.updateBalance(con, toNo, to.getBalance().add(amount));
+            con.commit();
+        } catch (RuntimeException e) {
+            rollback(con);
+            throw e;
+        } catch (SQLException e) {
+            rollback(con);
+            throw new RuntimeException("이체 실패", e);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            // 2. 기존 잔액에 입금액을 빼서 새로운 잔액 설정
-	          
-	            account.setBalance(account.getBalance().subtract(depositAmount));
+    /** 계좌 해지 : 잔액 0 확인 후 삭제. */
+    public void closeAccount(String accountNo) {
+        Connection con = connect();
+        try {
+            con.setAutoCommit(false);
+            Account account = getOrThrow(con, accountNo);
+            if (account.getBalance().signum() != 0) {
+                throw new IllegalStateException("잔액이 남아 있어 해지할 수 없습니다. (잔액: "
+                        + account.getBalance() + ")");
+            }
+            accountDao.delete(con, accountNo);
+            con.commit();
+        } catch (RuntimeException e) {
+            rollback(con);
+            throw e;
+        } catch (SQLException e) {
+            rollback(con);
+            throw new RuntimeException("계좌 해지 실패", e);
+        } finally {
+            DBUtil.dbDisconnect(con, null, null);
+        }
+    }
 
-	            // 3. 💡 핵심: 수정된 account 객체를 통째로 넘겨서 DB 업데이트
-	            boolean isSuccess = accountRepository.update(account);
-	            
-	            if (isSuccess) {
-	                System.out.println("====== 출금 완료 ======");
-	                System.out.println(account.toString()); // 롬복 @ToString 활용
-	            } else {
-	                System.out.println("출금 처리 중 오류가 발생했습니다.");
-	            }
-	        } else {
-	            System.out.println("해당 계좌를 찾을 수 없습니다.");
-	        }
-	    }
-	    
-	    public void f_transfer() {
-	        System.out.println("\n--- 송금 서비스 ---");
-	        System.out.print("보내시는 분 계좌번호 입력: "); // 💡 안내 문구 명확하게 수정
-	        String fromAccNo = scanner.nextLine();
-	        
-	        System.out.print("받으실 분 계좌번호 입력: ");
-	        String toAccNo = scanner.nextLine();
-	        
-	        // 자기 자신에게 송금하는 것 방지
-	        if (fromAccNo.equals(toAccNo)) {
-	            System.out.println("동일한 계좌로는 송금할 수 없습니다.");
-	            return;
-	        }
+    // ── 내부 헬퍼 ──────────────────────────────────────────────
 
-	        // 1. 발신 계좌와 수신 계좌를 각각 DB에서 조회
-	        Account fromAccount = accountRepository.findByAccountNo(fromAccNo);
-	        Account toAccount = accountRepository.findByAccountNo(toAccNo);
+    private Connection connect() {
+        Connection con = DBUtil.dbConnect();
+        if (con == null) {
+            throw new RuntimeException("DB 연결에 실패했습니다.");
+        }
+        return con;
+    }
 
-	        // 2. 계좌 존재 여부 검증
-	        if (fromAccount == null) {
-	            System.out.println("보내시는 분의 계좌를 찾을 수 없습니다.");
-	            return;
-	        }
-	        if (toAccount == null) {
-	            System.out.println("받으실 분의 계좌를 찾을 수 없습니다.");
-	            return;
-	        }
+    private Account getOrThrow(Connection con, String accountNo) {
+        Account account = accountDao.findByNo(con, accountNo);
+        if (account == null) {
+            throw new IllegalArgumentException("계좌를 찾을 수 없습니다: " + accountNo);
+        }
+        return account;
+    }
 
-	        // 3. 송금 금액 입력 및 검증
-	        System.out.print("송금할 금액 입력: ");
-	        BigDecimal transferAmount = scanner.nextBigDecimal();
-	        scanner.nextLine(); // Scanner 버그 방지용 (엔터키 소모)
+    private void validateAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("금액은 0보다 커야 합니다.");
+        }
+    }
 
-	        if (transferAmount.compareTo(BigDecimal.ZERO) <= 0) {
-	            System.out.println("송금 금액은 0원보다 커야 합니다.");
-	            return;
-	        }
-
-	        // 4. 발신 계좌 잔액 부족 검증 (발신잔액 < 송금액)
-	        if (fromAccount.getBalance().compareTo(transferAmount) < 0) {
-	            System.out.println("잔액이 부족합니다. 현재 잔액: " + fromAccount.getBalance());
-	            return;
-	        }
-
-	        // 5. 💡 금액 연산 (한 줄 축약 적용!)
-	        fromAccount.setBalance(fromAccount.getBalance().subtract(transferAmount)); // 발신인은 차감
-	        toAccount.setBalance(toAccount.getBalance().add(transferAmount));       // 수신인은 가산
-
-	        // 6. DB에 두 계좌의 변경 사항을 각각 업데이트
-	        boolean isFromUpdateSuccess = accountRepository.update(fromAccount);
-	        boolean isToUpdateSuccess = accountRepository.update(toAccount);
-
-	        // 7. 결과 확인
-	        if (isFromUpdateSuccess && isToUpdateSuccess) {
-	            System.out.println("====== 송금 완료 ======");
-	            System.out.println("[보낸 계좌] " + fromAccount.getAccountNo() + " | 남은 잔액: " + fromAccount.getBalance());
-	            System.out.println("[받은 계좌] " + toAccount.getAccountNo() + " | 현재 잔액: " + toAccount.getBalance());
-	        } else {
-	            // 실제 금융 프로그램에서는 이 부분 처리가 매우 중요합니다 (트랜잭션 개념)
-	            System.out.println("송금 처리 중 데이터베이스 오류가 발생했습니다. 시스템 관리자에게 문의하세요.");
-	        }
-	    }
+    private void rollback(Connection con) {
+        try {
+            if (con != null) {
+                con.rollback();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
 }
