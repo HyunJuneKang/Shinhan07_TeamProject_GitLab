@@ -4,3 +4,4 @@ bin/
 *.class/
 .DS_Store/
 Thumbs.db
+/build/
