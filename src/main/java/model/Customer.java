@@ -1,6 +1,5 @@
 package model;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 import lombok.AllArgsConstructor;
@@ -16,10 +15,9 @@ import lombok.ToString;
 @Setter
 @Getter
 @ToString
-public class Account {
-    private String accountNo;          // 계좌번호
+public class Customer {
     private Long customerId;           // 고객 ID
-    private BigDecimal balance;        // 잔액
-    private AccountStatus status;      // ACTIVE / CLOSED
+    private String name;               // 고객명
+    private String phone;              // 전화번호
     private LocalDateTime createdAt;   // 생성일
 }
