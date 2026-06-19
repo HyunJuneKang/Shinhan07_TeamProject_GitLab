@@ -1,15 +1,15 @@
-package main.java.service;
+package service;
 
-import main.java.model.Account;
-import main.java.repository.*;
+import model.Account;
+import repository.*;
 import java.math.BigDecimal;
 
 public class AccountService {
     
     // DB와 통신하기 위해 팀원 A가 만든 Repository를 가져옴
-    private final AccountRepository accountRepository;
+    private final AccountRepositories accountRepository;
 
-    public AccountService(AccountRepository accountRepository) {
+    public AccountService(AccountRepositories accountRepository) {
         this.accountRepository = accountRepository;
     }
 

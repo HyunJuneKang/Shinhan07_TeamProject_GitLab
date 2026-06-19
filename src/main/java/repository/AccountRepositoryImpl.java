@@ -1,8 +1,8 @@
-package main.java.repository;
+package repository;
 
-import main.java.model.Account;
-import main.java.model.AccountStatus; // 패키지 경로 확인 필요
-import main.java.util.DBUtil;
+import model.Account;
+import model.AccountStatus; // 패키지 경로 확인 필요
+import util.DBUtil;
 
 import java.sql.*;
 import java.util.ArrayList;

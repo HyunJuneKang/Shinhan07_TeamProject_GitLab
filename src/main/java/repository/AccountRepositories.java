@@ -1,6 +1,6 @@
-package main.java.repository;
+package repository;
 
-import main.java.model.Account;
+import model.Account;
 
 import java.util.List;
 
