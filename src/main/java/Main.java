@@ -6,6 +6,6 @@ import java.util.Scanner;
 
 public class Main {
     public static void main(String[] args) {
-        AccountView.scr_View();
+        AccountController.ac_Menu();
     }
 }
